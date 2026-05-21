@@ -1,198 +1,222 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from io import BytesIO
-import openpyxl
+import io
+from datetime import datetime
 
-# Configuration globale de la page Streamlit
+# Configuration stricte de la page pour Streamlit Cloud
 st.set_page_config(
     page_title="SKAB Nutrition — Consolidation CI",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-st.title("📊 SKAB Nutrition — Plateforme de Consolidation du Contrôle Interne")
-st.markdown("### 🚀 Système de Consolidation Cloud (Remplacement Power Query)")
-st.markdown("Déposez simultanément les fichiers Excel de vos contrôleurs pour fusionner instantanément les données.")
+# -----------------------------------------------------------------------------
+# MOTEUR DE CONSOLIDATION (TRAITEMENT EN MÉMOIRE RAM)
+# -----------------------------------------------------------------------------
+def extraire_metadonnees_fichier(nom_fichier):
+    """
+    Analyse le nom du fichier pour extraire le code contrôleur et le pays.
+    Format attendu : SKAB_Controleur_CI-001_Cameroun_2026.xlsx
+    """
+    nom_brut = nom_fichier.replace(".xlsx", "")
+    parties = nom_brut.split("_")
+    
+    # Valeurs par défaut si le nom ne respecte pas le pattern
+    code_ctrl = "Inconnu"
+    pays_filiale = "Non spécifié"
+    
+    if len(parties) >= 4:
+        code_ctrl = parties[2]     # ex: CI-001
+        pays_filiale = parties[3]  # ex: Cameroun
+    elif len(parties) == 3:
+        code_ctrl = parties[2]
+        
+    return code_ctrl, pays_filiale
 
-# --- MOTEUR DE TRAITEMENT PANDAS SECURISE ---
-def extraire_donnees_controleurs(fichiers_charges):
-    all_missions = []
-    all_points = []
-    all_anomalies = []
-    all_plans = []
-    journal_import = []
-
+def consolider_les_fichiers(fichiers_charges):
+    """
+    Boucle sur tous les fichiers injectés, lit les onglets correspondants,
+    fusionne les lignes et ajoute les colonnes de traçabilité.
+    """
+    # Onglets officiels définis dans le template SKAB
+    onglets_cibles = {
+        "MES_MISSIONS": "CONSO_MISSIONS",
+        "POINTS_CONTROLE": "CONSO_POINTS_CONTROLE",
+        "ANOMALIES": "CONSO_ANOMALIES",
+        "PLANS_ACTION": "CONSO_PLANS_ACTION"
+    }
+    
+    # Initialisation des listes pour stocker les DataFrames de chaque contrôleur
+    donnies_assimilees = {onglet: [] for onglet in onglets_cibles.keys()}
+    
     for fichier in fichiers_charges:
-        nom_fichier = fichier.name
         try:
-            # 1. Lecture sécurisée de l'identité du contrôleur (Feuille PARAMETRES)
-            df_param = pd.read_excel(fichier, sheet_name="PARAMETRES", header=None)
+            # Lecture du fichier Excel en mémoire (BytesIO requis sur Streamlit Cloud)
+            contenu_fichier = fichier.read()
+            excel_object = pd.ExcelFile(io.BytesIO(contenu_fichier))
             
-            # Récupération selon l'index exact du template SKAB (Ligne 5 = index 4, Ligne 6 = index 5, etc.)
-            nom_ctrl = df_param.iloc[4, 1] if len(df_param) > 4 else "Inconnu"
-            code_ctrl = df_param.iloc[5, 1] if len(df_param) > 5 else "INCONNU"
-            pays_ctrl = df_param.iloc[6, 1] if len(df_param) > 6 else "Inconnu"
-
-            # 2. Onglet MES_MISSIONS (skiprows=4 car les en-têtes réels sont à la ligne 5)
-            df_mis = pd.read_excel(fichier, sheet_name="MES_MISSIONS", skiprows=4)
-            if not df_mis.empty and "N° Mission" in df_mis.columns:
-                df_mis = df_mis.dropna(subset=["N° Mission"])
-                df_mis["Contrôleur"] = nom_ctrl
-                df_mis["Code Contrôleur"] = code_ctrl
-                df_mis["Pays Originel"] = pays_ctrl
-                df_mis["Fichier Source"] = nom_fichier
-                all_missions.append(df_mis)
-
-            # 3. Onglet POINTS_CONTROLE
-            df_pts = pd.read_excel(fichier, sheet_name="POINTS_CONTROLE", skiprows=4)
-            if not df_pts.empty and "N° Mission" in df_pts.columns:
-                df_pts = df_pts.dropna(subset=["N° Mission"])
-                df_pts["Contrôleur"] = nom_ctrl
-                df_pts["Fichier Source"] = nom_fichier
-                all_points.append(df_pts)
-
-            # 4. Onglet ANOMALIES
-            df_anom = pd.read_excel(fichier, sheet_name="ANOMALIES", skiprows=4)
-            if not df_anom.empty:
-                # Nettoyage des lignes complètement vides
-                df_anom = df_anom.dropna(how="all")
-                df_anom["Contrôleur"] = nom_ctrl
-                df_anom["Pays"] = pays_ctrl
-                df_anom["Fichier Source"] = nom_fichier
-                all_anomalies.append(df_anom)
-
-            # 5. Onglet PLANS_ACTION
-            df_pln = pd.read_excel(fichier, sheet_name="PLANS_ACTION", skiprows=4)
-            if not df_pln.empty and "ID Plan" in df_pln.columns:
-                df_pln = df_pln.dropna(subset=["ID Plan"])
-                df_pln["Contrôleur"] = nom_ctrl
-                df_pln["Fichier Source"] = nom_fichier
-                all_plans.append(df_pln)
-
-            journal_import.append({
-                "Fichier": nom_fichier, "Contrôleur": nom_ctrl, "Code": code_ctrl, "Pays": pays_ctrl, "Statut": "✅ Validé & Intégré"
-            })
-
+            # Extraction des infos de traçabilité via le nom du fichier
+            code_ctrl, pays_filiale = extraire_metadonnees_fichier(fichier.name)
+            
+            for onglet in onglets_cibles.keys():
+                if onglet in excel_object.sheet_names:
+                    # Lecture de l'onglet en ignorant les lignes d'en-tête décoratives si nécessaire
+                    df = pd.read_excel(excel_object, sheet_name=onglet)
+                    
+                    # Nettoyage : suppression des lignes complètement vides
+                    df = df.dropna(how='all')
+                    
+                    if not df.empty:
+                        # Ajout des colonnes de suivi pour le reporting DAF
+                        df["Contrôleur Source"] = code_ctrl
+                        df["Zone / Filiale"] = pays_filiale
+                        df["Nom Fichier Origine"] = fichier.name
+                        
+                        donnies_assimilees[onglet].append(df)
+                        
+            # Réinitialiser le pointeur du fichier pour les lectures suivantes si besoin
+            fichier.seek(0)
+            
         except Exception as e:
-            journal_import.append({
-                "Fichier": nom_fichier, "Contrôleur": "Erreur", "Code": "-", "Pays": "-", "Statut": f"❌ Échec de lecture : {str(e)}"
-            })
+            st.error(f"❌ Impossible de lire le fichier `{fichier.name}`. Vérifiez sa structure. Erreur : {e}")
 
-    # Regroupement final global avec gestion des structures vides
-    conso_mis = pd.concat(all_missions, ignore_index=True) if all_missions else pd.DataFrame()
-    conso_pts = pd.concat(all_points, ignore_index=True) if all_points else pd.DataFrame()
-    conso_anom = pd.concat(all_anomalies, ignore_index=True) if all_anomalies else pd.DataFrame()
-    conso_pln = pd.concat(all_plans, ignore_index=True) if all_plans else pd.DataFrame()
-    df_journal = pd.DataFrame(journal_import)
+    # --- ÉCRITURE DU FICHIER MAÎTRE FINAL ---
+    output_stream = io.BytesIO()
+    
+    with pd.ExcelWriter(output_stream, engine='xlsxwriter') as writer:
+        # 1. Onglet d'Accueil et de Validation pour le Chef de Département
+        df_accueil = pd.DataFrame({
+            "CONTRÔLE INTERNE GROUPE SKAB": [
+                "Livrable destiné à",
+                "Généré par",
+                "Date et Heure de consolidation",
+                "Nombre de fichiers contrôleurs inclus",
+                "Statut du document"
+            ],
+            "DONNÉES DE TRAÇABILITÉ": [
+                "M. Élie DIGNOU (DAF)",
+                "Chef de Département Contrôle Interne",
+                datetime.now().strftime("%d/%m/%Y à %H:%M:%S"),
+                len(fichiers_charges),
+                "VALIDÉ — Prêt pour mise à jour du Dashboard Exécutif"
+            ]
+        })
+        df_accueil.to_excel(writer, sheet_name="ACCUEIL_CD", index=False)
+        
+        # Outils de stylisation Excel via XlsxWriter (optionnel mais propre)
+        workbook = writer.book
+        worksheet_accueil = writer.sheets["ACCUEIL_CD"]
+        worksheet_accueil.set_column('A:B', 40)
+        
+        # 2. Fusion et injection des onglets consolidés
+        for onglet_template, nom_onglet_conso in onglets_cibles.items():
+            list_dfs = donnies_assimilees[onglet_template]
+            
+            if list_dfs:
+                # Fusionner tous les fichiers pour cet onglet précis
+                df_structure_total = pd.concat(list_dfs, ignore_index=True)
+            else:
+                # Créer un tableau vide avec les colonnes de traçabilité si aucun contrôleur n'a de lignes
+                df_structure_total = pd.DataFrame(columns=["ID", "Statut", "Contrôleur Source", "Zone / Filiale", "Nom Fichier Origine"])
+                
+            # Écriture dans le classeur final
+            df_structure_total.to_excel(writer, sheet_name=nom_onglet_conso, index=False)
+            
+            # Ajustement automatique de la largeur des colonnes pour le confort du DAF
+            worksheet = writer.sheets[nom_onglet_conso]
+            for idx, col in enumerate(df_structure_total.columns):
+                series = df_structure_total[col]
+                max_len = max(series.astype(str).map(len).max(), len(str(col))) + 3
+                max_len = min(max_len, 50) # Limitation pour éviter les colonnes trop larges
+                worksheet.set_column(idx, idx, max_len)
+                
+    return output_stream.getvalue()
 
-    return conso_mis, conso_pts, conso_anom, conso_pln, df_journal
+# -----------------------------------------------------------------------------
+# INTERFACE UTILISATEUR (STREAMLIT UI)
+# -----------------------------------------------------------------------------
+# En-tête de marque SKAB
+st.title("🌾 SKAB Nutrition — Direction de l'Audit et du Contrôle Interne")
+st.markdown("### `Espace de Consolidation Multi-Filiales`")
+st.write(
+    "Cet outil Web unifié permet de compiler instantanément les journaux de contrôle, "
+    "les listes d'anomalies et les plans d'action terrain reçus des différents pays (Cameroun, Tchad, Gabon, RCA...)."
+)
+st.markdown("---")
 
-# --- INTERFACE UTILISATEUR (UI) ---
-fichiers_transmis = st.file_uploader(
-    "Téléversez les fichiers Excel des contrôleurs (.xlsx)",
+# Section principale de dépôt
+st.subheader("👑 Session du Chef de Département")
+st.info(
+    "💡 **Rappel de la procédure :** Collectez les fichiers `.xlsx` de vos contrôleurs "
+    "via vos canaux habituels, puis glissez-les tous ensemble ci-dessous."
+)
+
+# Zone de dépôt multiple (accept_multiple_files est indispensable ici)
+fichiers_recus = st.file_uploader(
+    "Sélectionnez ou déposez les fichiers des contrôleurs (Format .xlsx uniquement) :",
     type=["xlsx"],
     accept_multiple_files=True,
-    help="Sélectionnez plusieurs fichiers simultanément (Ctrl+A dans votre explorateur)"
+    key="uploader_maitre"
 )
 
-if fichiers_transmis:
-    # Exécution du traitement de données
-    conso_mis, conso_pts, conso_anom, conso_pln, df_journal = extraire_donnees_controleurs(fichiers_transmis)
+if fichiers_recus:
+    st.markdown("### 📊 Fichiers prêts pour la fusion")
     
-    # Affichage du journal d'intégration
-    st.subheader("📋 Suivi de l'intégration des filiales")
-    st.dataframe(df_journal, use_container_width=True)
-
-    # --- ZONE STATISTIQUE INTERACTIVE ---
-    st.divider()
-    st.subheader("🎯 Indicateurs de Performance Consolidés (Vue Direction)")
-    
-    c1, c2, c3, c4 = st.columns(4)
-    nb_missions = len(conso_mis) if not conso_mis.empty else 0
-    nb_anomalies = len(conso_anom) if not conso_anom.empty else 0
-    
-    # CALCUL ULTRA-SÉCURISÉ DES ANOMALIES CRITIQUES
-    nb_critiques_actives = 0
-    if not conso_anom.empty:
-        # On force la présence des colonnes indispensables avec des valeurs vides au besoin
-        if "Niveau criticité" not in conso_anom.columns:
-            conso_anom["Niveau criticité"] = "Non spécifié"
-        if "Statut" not in conso_anom.columns:
-            conso_anom["Statut"] = "Ouvert"
-
-        # Conversion forcée en chaînes de caractères (évite le bug .str accessor)
-        criticite_texte = conso_anom["Niveau criticité"].astype(str)
-        statut_texte = conso_anom["Statut"].astype(str)
+    # Création d'un tableau récapitulatif pour contrôle visuel préalable
+    details_chargement = []
+    for f in fichiers_recus:
+        code, zone = extraire_metadonnees_fichier(f.name)
+        details_chargement.append({
+            "Nom du fichier": f.name,
+            "ID Contrôleur extrait": code,
+            "Zone / Filiale": zone,
+            "Taille": f"{f.size / 1024:.2f} KB"
+        })
         
-        nb_critiques_actives = len(conso_anom[
-            (criticite_texte.str.contains("Critique", na=False, case=False)) & 
-            (statut_texte.str.contains("Ouvert|En cours", na=False, case=False))
-        ])
-        
-    perte_financiere = 0
-    if not conso_anom.empty and "Impact estimé (FCFA)" in conso_anom.columns:
-        perte_financiere = pd.to_numeric(conso_anom["Impact estimé (FCFA)"], errors='coerce').sum()
-
-    c1.metric("Missions enregistrées", nb_missions)
-    c2.metric("Anomalies relevées", nb_anomalies)
-    c3.metric("Urgences Critiques", nb_critiques_actives)
-    c4.metric("Impact Financier Global", f"{perte_financiere:,.0f} FCFA")
-
-    # --- GRAPHIQUES EXÉCUTIFS SÉCURISÉS ---
-    st.write("")
-    g1, g2 = st.columns(2)
+    st.dataframe(pd.DataFrame(details_chargement), use_container_width=True)
     
-    with g1:
-        if not conso_anom.empty and "Niveau criticité" in conso_anom.columns:
-            st.markdown("**🎯 Gravité des risques identifiés**")
-            df_g1 = conso_anom["Niveau criticité"].astype(str).value_counts().reset_index()
-            df_g1.columns = ["Criticité", "Volume"]
-            
-            fig1 = px.pie(df_g1, values="Volume", names="Criticité", hole=0.4,
-                          color_discrete_map={"🔴 Critique":"#D32F2F", "🟠 Majeur":"#F57C00", "🟡 Mineur":"#FBC02D", "🟢 Faible":"#388E3C"})
-            st.plotly_chart(fig1, use_container_width=True)
-        else:
-            st.info("Aucune donnée disponible pour le graphique de criticité.")
-            
-    with g2:
-        if not conso_anom.empty and "Pays" in conso_anom.columns:
-            st.markdown("**🏢 Répartition géographique des anomalies**")
-            df_g2 = conso_anom["Pays"].astype(str).value_counts().reset_index()
-            df_g2.columns = ["Pays", "Anomalies"]
-            
-            fig2 = px.bar(df_g2, x="Pays", y="Anomalies", text_auto=True, color="Anomalies", color_continuous_scale="Oranges")
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("Aucune donnée géographique disponible pour les anomalies.")
-
-    # --- COMPILATION ET EXPORT DE DONNÉES STRUCTURÉES ---
-    st.divider()
-    st.subheader("📥 Génération des Données Consolidées Groupe")
-    st.info("Le système génère un classeur structuré prêt à être injecté dans votre Tableau de bord Excel Principal (Fichier Maître).")
+    st.markdown("---")
     
-    if st.button("⚙️ Lancer la compilation finale des données"):
-        buffer_excel = BytesIO()
-        with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-            # Injection propre respectant les structures des onglets cibles
-            if not conso_mis.empty:
-                conso_mis.to_excel(writer, sheet_name="CONSO_MISSIONS", index=False, startrow=4)
-            if not conso_pts.empty:
-                conso_pts.to_excel(writer, sheet_name="CONSO_POINTS_CONTROLE", index=False, startrow=4)
-            if not conso_anom.empty:
-                conso_anom.to_excel(writer, sheet_name="CONSO_ANOMALIES", index=False, startrow=4)
-            if not conso_pln.empty:
-                conso_pln.to_excel(writer, sheet_name="CONSO_PLANS_ACTION", index=False, startrow=4)
+    # Déclenchement du traitement
+    if st.button("🔄 Lancer la consolidation globale", type="primary", use_container_width=True):
+        with st.spinner("Analyse des structures Excel, injection des traçabilités et fusion des onglets..."):
             
-            df_journal.to_excel(writer, sheet_name="LOG_CONSOLIDATION", index=False)
-
-        donnees_finales = buffer_excel.getvalue()
-        
-        st.download_button(
-            label="💾 Télécharger les Données Consolidées (.xlsx)",
-            data=donnees_finales,
-            file_name="SKAB_DATA_CONSOLIDATION_GROUPE.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            # Exécution du moteur
+            fichier_maitre_bytes = consolider_les_fichiers(fichiers_recus)
+            
+            st.success("🎉 Fichier MAÎTRE compilé avec succès en mémoire vive !")
+            
+            # Nommage normalisé du document selon la date du jour
+            date_iso = datetime.now().strftime("%Y%m%d")
+            nom_maitre_final = f"SKAB_MAITRE_CD_CONSOLIDE_{date_iso}.xlsx"
+            
+            # Organisation de l'espace de téléchargement
+            zone_telechargement, zone_instructions = st.columns([1, 1])
+            
+            with zone_telechargement:
+                st.write("📥 **Votre livrable est prêt :**")
+                st.download_button(
+                    label="💾 Télécharger le fichier MAÎTRE (.xlsx)",
+                    data=fichier_maitre_bytes,
+                    file_name=nom_maitre_final,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+                
+            with zone_instructions:
+                st.warning(
+                    f"📧 **Action DAF :** Vous pouvez maintenant récupérer ce fichier téléchargé et "
+                    f"le transmettre directement à **M. Élie DIGNOU (DAF)** pour l'arbitrage budgétaire des "
+                    f"plans de remédiation et la mise à jour des indicateurs du Groupe."
+                )
 else:
-    st.warning("📥 En attente de fichiers d'audit pour générer la synthèse et l'export.")
+    st.write("")
+    st.info("⏳ En attente de fichiers pour démarrer le processus de traitement.")
+
+# Pied de page institutionnel
+st.markdown("---")
+st.caption(
+    f"© {datetime.now().year} Groupe SKAB Nutrition — "
+    f"Application de centralisation du Contrôle Interne hébergée sur Streamlit Cloud."
+)
