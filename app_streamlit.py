@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import numpy as np
 from datetime import datetime
 
 # Configuration stricte de la page pour Streamlit Cloud
@@ -128,16 +129,24 @@ def consolider_les_fichiers(fichiers_charges):
             for idx, col in enumerate(df_structure_total.columns):
                 series = df_structure_total[col]
                 
-                # --- CORRECTION DE L'ERREUR ICI ---
-                # Si la colonne a des lignes, on calcule sa longueur max, sinon on prend 0
-                if not series.dropna().empty:
-                    max_cells_len = int(series.astype(str).map(len).max())
+                # --- CORRECTION BLINDÉE DE L'ERREUR DE TYPE ET DE LONGUEUR ---
+                # On nettoie les valeurs nulles pour éviter de fausser les calculs
+                clean_series = series.dropna()
+                
+                if not clean_series.empty:
+                    # Utilisation de .apply(str) au lieu de .astype(str).map(len) pour contourner le bug de l'interpréteur de type pandas
+                    lengths = clean_series.apply(lambda x: len(str(x)))
+                    max_cells_len = lengths.max()
+                    
+                    # Double sécurité : si le max calculé est indéterminé ou invalide (NaN)
+                    if pd.isna(max_cells_len) or not isinstance(max_cells_len, (int, float, np.integer)):
+                        max_cells_len = 0
                 else:
                     max_cells_len = 0
                 
                 # Comparaison sécurisée avec la longueur du titre de la colonne
-                max_len = max(max_cells_len, len(str(col))) + 3
-                max_len = min(max_len, 50)  # Limitation pour éviter les colonnes géantes
+                max_len = max(int(max_cells_len), len(str(col))) + 3
+                max_len = min(max_len, 50)  # Limitation pour éviter les colonnes géantes de commentaires
                 
                 worksheet.set_column(idx, idx, max_len)
                 
