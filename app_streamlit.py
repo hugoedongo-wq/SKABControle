@@ -13,7 +13,7 @@ st.set_page_config(
 
 st.title("📊 SKAB Nutrition — Plateforme de Consolidation du Contrôle Interne")
 st.markdown("### 🚀 Système de Consolidation Cloud (Remplacement Power Query)")
-st.markdown("Déposez simultanément les fichiers Excel de vos contrôleurs pour fusionner instantanément les données et mettre à jour le Tableau de Bord Groupe.")
+st.markdown("Déposez simultanément les fichiers Excel de vos contrôleurs pour fusionner instantanément les données.")
 
 # --- MOTEUR DE TRAITEMENT PANDAS SECURISE ---
 def extraire_donnees_controleurs(fichiers_charges):
@@ -34,36 +34,41 @@ def extraire_donnees_controleurs(fichiers_charges):
             code_ctrl = df_param.iloc[5, 1] if len(df_param) > 5 else "INCONNU"
             pays_ctrl = df_param.iloc[6, 1] if len(df_param) > 6 else "Inconnu"
 
-            # 2. Consolidation de l'onglet MES_MISSIONS (En-tête à la ligne 5 -> skiprows=4)
+            # 2. Onglet MES_MISSIONS (skiprows=4 car les en-têtes réels sont à la ligne 5)
             df_mis = pd.read_excel(fichier, sheet_name="MES_MISSIONS", skiprows=4)
-            df_mis = df_mis.dropna(subset=["N° Mission"])
-            df_mis["Contrôleur"] = nom_ctrl
-            df_mis["Code Contrôleur"] = code_ctrl
-            df_mis["Pays Originel"] = pays_ctrl
-            df_mis["Fichier Source"] = nom_fichier
-            all_missions.append(df_mis)
+            if not df_mis.empty and "N° Mission" in df_mis.columns:
+                df_mis = df_mis.dropna(subset=["N° Mission"])
+                df_mis["Contrôleur"] = nom_ctrl
+                df_mis["Code Contrôleur"] = code_ctrl
+                df_mis["Pays Originel"] = pays_ctrl
+                df_mis["Fichier Source"] = nom_fichier
+                all_missions.append(df_mis)
 
-            # 3. Consolidation de l'onglet POINTS_CONTROLE
+            # 3. Onglet POINTS_CONTROLE
             df_pts = pd.read_excel(fichier, sheet_name="POINTS_CONTROLE", skiprows=4)
-            df_pts = df_pts.dropna(subset=["N° Mission"])
-            df_pts["Contrôleur"] = nom_ctrl
-            df_pts["Fichier Source"] = nom_fichier
-            all_points.append(df_pts)
+            if not df_pts.empty and "N° Mission" in df_pts.columns:
+                df_pts = df_pts.dropna(subset=["N° Mission"])
+                df_pts["Contrôleur"] = nom_ctrl
+                df_pts["Fichier Source"] = nom_fichier
+                all_points.append(df_pts)
 
-            # 4. Consolidation de l'onglet ANOMALIES
+            # 4. Onglet ANOMALIES
             df_anom = pd.read_excel(fichier, sheet_name="ANOMALIES", skiprows=4)
-            df_anom = df_anom.dropna(subset=["Date détection"])
-            df_anom["Contrôleur"] = nom_ctrl
-            df_anom["Pays"] = pays_ctrl
-            df_anom["Fichier Source"] = nom_fichier
-            all_anomalies.append(df_anom)
+            if not df_anom.empty:
+                # Nettoyage des lignes complètement vides
+                df_anom = df_anom.dropna(how="all")
+                df_anom["Contrôleur"] = nom_ctrl
+                df_anom["Pays"] = pays_ctrl
+                df_anom["Fichier Source"] = nom_fichier
+                all_anomalies.append(df_anom)
 
-            # 5. Consolidation de l'onglet PLANS_ACTION
+            # 5. Onglet PLANS_ACTION
             df_pln = pd.read_excel(fichier, sheet_name="PLANS_ACTION", skiprows=4)
-            df_pln = df_pln.dropna(subset=["ID Plan"])
-            df_pln["Contrôleur"] = nom_ctrl
-            df_pln["Fichier Source"] = nom_fichier
-            all_plans.append(df_pln)
+            if not df_pln.empty and "ID Plan" in df_pln.columns:
+                df_pln = df_pln.dropna(subset=["ID Plan"])
+                df_pln["Contrôleur"] = nom_ctrl
+                df_pln["Fichier Source"] = nom_fichier
+                all_plans.append(df_pln)
 
             journal_import.append({
                 "Fichier": nom_fichier, "Contrôleur": nom_ctrl, "Code": code_ctrl, "Pays": pays_ctrl, "Statut": "✅ Validé & Intégré"
@@ -74,7 +79,7 @@ def extraire_donnees_controleurs(fichiers_charges):
                 "Fichier": nom_fichier, "Contrôleur": "Erreur", "Code": "-", "Pays": "-", "Statut": f"❌ Échec de lecture : {str(e)}"
             })
 
-    # Regroupement final global
+    # Regroupement final global avec gestion des structures vides
     conso_mis = pd.concat(all_missions, ignore_index=True) if all_missions else pd.DataFrame()
     conso_pts = pd.concat(all_points, ignore_index=True) if all_points else pd.DataFrame()
     conso_anom = pd.concat(all_anomalies, ignore_index=True) if all_anomalies else pd.DataFrame()
@@ -107,14 +112,21 @@ if fichiers_transmis:
     nb_missions = len(conso_mis) if not conso_mis.empty else 0
     nb_anomalies = len(conso_anom) if not conso_anom.empty else 0
     
-    # CALCUL SÉCURISÉ DES ANOMALIES CRITIQUES (Résolution du bug AttributeError)
+    # CALCUL ULTRA-SÉCURISÉ DES ANOMALIES CRITIQUES
     nb_critiques_actives = 0
-    if not conso_anom.empty and "Niveau criticité" in conso_anom.columns and "Statut" in conso_anom.columns:
+    if not conso_anom.empty:
+        # On force la présence des colonnes indispensables avec des valeurs vides au besoin
+        if "Niveau criticité" not in conso_anom.columns:
+            conso_anom["Niveau criticité"] = "Non spécifié"
+        if "Statut" not in conso_anom.columns:
+            conso_anom["Statut"] = "Ouvert"
+
+        # Conversion forcée en chaînes de caractères (évite le bug .str accessor)
         criticite_texte = conso_anom["Niveau criticité"].astype(str)
         statut_texte = conso_anom["Statut"].astype(str)
         
         nb_critiques_actives = len(conso_anom[
-            (criticite_texte.str.contains("Critique", na=False)) & 
+            (criticite_texte.str.contains("Critique", na=False, case=False)) & 
             (statut_texte.str.contains("Ouvert|En cours", na=False, case=False))
         ])
         
@@ -134,7 +146,6 @@ if fichiers_transmis:
     with g1:
         if not conso_anom.empty and "Niveau criticité" in conso_anom.columns:
             st.markdown("**🎯 Gravité des risques identifiés**")
-            # astype(str) ajouté ici pour parer à tout défaut d'alignement de type dans le graphique
             df_g1 = conso_anom["Niveau criticité"].astype(str).value_counts().reset_index()
             df_g1.columns = ["Criticité", "Volume"]
             
@@ -158,12 +169,12 @@ if fichiers_transmis:
     # --- COMPILATION ET EXPORT DE DONNÉES STRUCTURÉES ---
     st.divider()
     st.subheader("📥 Génération des Données Consolidées Groupe")
-    st.info("Le système génère un classeur structuré prêt à être copié ou lu par votre Tableau de bord Excel Principal (Fichier Maître).")
+    st.info("Le système génère un classeur structuré prêt à être injecté dans votre Tableau de bord Excel Principal (Fichier Maître).")
     
     if st.button("⚙️ Lancer la compilation finale des données"):
         buffer_excel = BytesIO()
         with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-            # Injection propre respectant les structures des onglets cibles (skiprows initiaux)
+            # Injection propre respectant les structures des onglets cibles
             if not conso_mis.empty:
                 conso_mis.to_excel(writer, sheet_name="CONSO_MISSIONS", index=False, startrow=4)
             if not conso_pts.empty:
