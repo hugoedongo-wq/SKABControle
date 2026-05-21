@@ -61,7 +61,7 @@ def consolider_les_fichiers(fichiers_charges):
             
             for onglet in onglets_cibles.keys():
                 if onglet in excel_object.sheet_names:
-                    # Lecture de l'onglet en ignorant les lignes d'en-tête décoratives si nécessaire
+                    # Lecture de l'onglet
                     df = pd.read_excel(excel_object, sheet_name=onglet)
                     
                     # Nettoyage : suppression des lignes complètement vides
@@ -75,7 +75,7 @@ def consolider_les_fichiers(fichiers_charges):
                         
                         donnies_assimilees[onglet].append(df)
                         
-            # Réinitialiser le pointeur du fichier pour les lectures suivantes si besoin
+            # Réinitialiser le pointeur du fichier pour les lectures suivantes
             fichier.seek(0)
             
         except Exception as e:
@@ -104,7 +104,7 @@ def consolider_les_fichiers(fichiers_charges):
         })
         df_accueil.to_excel(writer, sheet_name="ACCUEIL_CD", index=False)
         
-        # Outils de stylisation Excel via XlsxWriter (optionnel mais propre)
+        # Outils de stylisation Excel via XlsxWriter
         workbook = writer.book
         worksheet_accueil = writer.sheets["ACCUEIL_CD"]
         worksheet_accueil.set_column('A:B', 40)
@@ -117,18 +117,28 @@ def consolider_les_fichiers(fichiers_charges):
                 # Fusionner tous les fichiers pour cet onglet précis
                 df_structure_total = pd.concat(list_dfs, ignore_index=True)
             else:
-                # Créer un tableau vide avec les colonnes de traçabilité si aucun contrôleur n'a de lignes
+                # Créer un tableau vide avec les colonnes de traçabilité de base si aucun contrôleur n'a de lignes
                 df_structure_total = pd.DataFrame(columns=["ID", "Statut", "Contrôleur Source", "Zone / Filiale", "Nom Fichier Origine"])
                 
             # Écriture dans le classeur final
             df_structure_total.to_excel(writer, sheet_name=nom_onglet_conso, index=False)
             
-            # Ajustement automatique de la largeur des colonnes pour le confort du DAF
+            # Ajustement automatique SÉCURISÉ de la largeur des colonnes
             worksheet = writer.sheets[nom_onglet_conso]
             for idx, col in enumerate(df_structure_total.columns):
                 series = df_structure_total[col]
-                max_len = max(series.astype(str).map(len).max(), len(str(col))) + 3
-                max_len = min(max_len, 50) # Limitation pour éviter les colonnes trop larges
+                
+                # --- CORRECTION DE L'ERREUR ICI ---
+                # Si la colonne a des lignes, on calcule sa longueur max, sinon on prend 0
+                if not series.dropna().empty:
+                    max_cells_len = int(series.astype(str).map(len).max())
+                else:
+                    max_cells_len = 0
+                
+                # Comparaison sécurisée avec la longueur du titre de la colonne
+                max_len = max(max_cells_len, len(str(col))) + 3
+                max_len = min(max_len, 50)  # Limitation pour éviter les colonnes géantes
+                
                 worksheet.set_column(idx, idx, max_len)
                 
     return output_stream.getvalue()
@@ -136,7 +146,6 @@ def consolider_les_fichiers(fichiers_charges):
 # -----------------------------------------------------------------------------
 # INTERFACE UTILISATEUR (STREAMLIT UI)
 # -----------------------------------------------------------------------------
-# En-tête de marque SKAB
 st.title("🌾 SKAB Nutrition — Direction de l'Audit et du Contrôle Interne")
 st.markdown("### `Espace de Consolidation Multi-Filiales`")
 st.write(
@@ -145,14 +154,12 @@ st.write(
 )
 st.markdown("---")
 
-# Section principale de dépôt
 st.subheader("👑 Session du Chef de Département")
 st.info(
     "💡 **Rappel de la procédure :** Collectez les fichiers `.xlsx` de vos contrôleurs "
     "via vos canaux habituels, puis glissez-les tous ensemble ci-dessous."
 )
 
-# Zone de dépôt multiple (accept_multiple_files est indispensable ici)
 fichiers_recus = st.file_uploader(
     "Sélectionnez ou déposez les fichiers des contrôleurs (Format .xlsx uniquement) :",
     type=["xlsx"],
@@ -163,7 +170,6 @@ fichiers_recus = st.file_uploader(
 if fichiers_recus:
     st.markdown("### 📊 Fichiers prêts pour la fusion")
     
-    # Création d'un tableau récapitulatif pour contrôle visuel préalable
     details_chargement = []
     for f in fichiers_recus:
         code, zone = extraire_metadonnees_fichier(f.name)
@@ -178,20 +184,16 @@ if fichiers_recus:
     
     st.markdown("---")
     
-    # Déclenchement du traitement
     if st.button("🔄 Lancer la consolidation globale", type="primary", use_container_width=True):
         with st.spinner("Analyse des structures Excel, injection des traçabilités et fusion des onglets..."):
             
-            # Exécution du moteur
             fichier_maitre_bytes = consolider_les_fichiers(fichiers_recus)
             
             st.success("🎉 Fichier MAÎTRE compilé avec succès en mémoire vive !")
             
-            # Nommage normalisé du document selon la date du jour
             date_iso = datetime.now().strftime("%Y%m%d")
             nom_maitre_final = f"SKAB_MAITRE_CD_CONSOLIDE_{date_iso}.xlsx"
             
-            # Organisation de l'espace de téléchargement
             zone_telechargement, zone_instructions = st.columns([1, 1])
             
             with zone_telechargement:
@@ -208,13 +210,11 @@ if fichiers_recus:
                 st.warning(
                     f"📧 **Action DAF :** Vous pouvez maintenant récupérer ce fichier téléchargé et "
                     f"le transmettre directement à **M. Élie DIGNOU (DAF)** pour l'arbitrage budgétaire des "
-                    f"plans de remédiation et la mise à jour des indicateurs du Groupe."
+                    f"plans de remédiation."
                 )
 else:
-    st.write("")
     st.info("⏳ En attente de fichiers pour démarrer le processus de traitement.")
 
-# Pied de page institutionnel
 st.markdown("---")
 st.caption(
     f"© {datetime.now().year} Groupe SKAB Nutrition — "
