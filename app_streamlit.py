@@ -13,7 +13,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Style CSS pour uniformiser l'affichage
 st.markdown("""
     <style>
     [data-testid="stMetricValue"] { font-size: 28px; }
@@ -24,40 +23,64 @@ st.markdown("""
 # --- MOTEUR DE TRAITEMENT ET DE LECTURE DES ONGLETS ---
 def load_and_clean(file, sheet):
     """
-    Lit un onglet spécifique. Détecte la vraie ligne d'en-tête (Header) 
-    et nettoie le nom des colonnes pour éviter les cassures de clés.
+    Lit un onglet spécifique en ciblant l'en-tête exacte du template SKAB
+    pour éviter de confondre les lignes de description avec les titres de colonnes.
     """
     try:
-        # Lecture globale brute de l'onglet
+        # 1. Lecture brute globale
         df_raw = pd.read_excel(file, sheet_name=sheet, header=None)
         if df_raw.empty:
             return pd.DataFrame()
             
-        # Recherche de la ligne qui contient les vrais titres de colonnes
-        header_idx = 0
+        # 2. Identification stricte de la ligne d'en-tête selon l'onglet
+        header_idx = None
         for idx, row in df_raw.iterrows():
-            row_str = row.astype(str).values
-            if any('ID ' in s or 'N° ' in s or 'Date' in s or 'Type' in s for s in row_str):
+            row_str = [str(val).strip() for val in row.values]
+            
+            # Cibles d'en-têtes exactes du template SKAB
+            if sheet == "MES_MISSIONS" and any("N° Mission" in s for s in row_str):
                 header_idx = idx
                 break
-                
-        # Re-lecture propre avec le bon en-tête trouvé
+            elif sheet == "POINTS_CONTROLE" and any("ID Point" in s for s in row_str):
+                header_idx = idx
+                break
+            elif sheet == "ANOMALIES" and any("ID Anomalie" in s for s in row_str):
+                header_idx = idx
+                break
+            elif sheet == "PLANS_ACTION" and any("ID Plan" in s for s in row_str):
+                header_idx = idx
+                break
+
+        # Si aucun en-tête spécifique n'est trouvé, on utilise la méthode de secours
+        if header_idx is None:
+            for idx, row in df_raw.iterrows():
+                row_str = [str(val).strip() for val in row.values]
+                if any("ID" in s or "N°" in s or "Code" in s for s in row_str):
+                    header_idx = idx
+                    break
+        
+        if header_idx is None:
+            header_idx = 0
+
+        # 3. Re-lecture propre à partir de la bonne ligne
         df = pd.read_excel(file, sheet_name=sheet, skiprows=header_idx)
+        
+        # Nettoyage des colonnes et suppression des lignes vides
+        df.columns = [str(c).strip() for c in df.columns]
+        df = df.dropna(subset=[df.columns[0]]) if not df.empty else df
         df = df.dropna(how='all')
         
-        # Nettoyage strict des noms de colonnes (suppression des espaces au début/fin)
-        df.columns = [str(c).strip() for c in df.columns]
-        
+        # Supprimer les lignes d'explications parasites qui commenceraient par des instructions
         if not df.empty:
+            df = df[~df[df.columns[0]].astype(str).str.contains("Une anomalie|Un plan|Saisissez|Une ligne", na=False)]
             df['Fichier Source'] = file.name
+            
         return df
-    except:
+    except Exception as e:
+        # En cas d'erreur de lecture, renvoyer un dataframe vide pour ne pas bloquer l'app
         return pd.DataFrame()
 
 def process_consolidation(files):
-    """
-    Parcourt l'ensemble des fichiers reçus et assemble les blocs.
-    """
     all_data = {"MISSIONS": [], "POINTS": [], "ANOMALIES": [], "PLANS": []}
     
     for f in files:
@@ -70,12 +93,10 @@ def process_consolidation(files):
         f.seek(0)
         all_data["PLANS"].append(load_and_clean(f, "PLANS_ACTION"))
 
-    # Fusion (concaténation) de toutes les listes en DataFrames uniques
     combined = {k: pd.concat(v, ignore_index=True) if v else pd.DataFrame() for k, v in all_data.items()}
     return combined
 
 def get_safe_len(series, col_name):
-    """Calcule proprement la largeur de colonne pour l'export Excel"""
     clean = series.dropna()
     if not clean.empty:
         max_c = int(clean.apply(lambda x: len(str(x))).max())
@@ -87,7 +108,7 @@ def get_safe_len(series, col_name):
 st.title("🛡️ Espace Chef de Département CI — Groupe SKAB")
 st.subheader("Pilotage, Validation Métier et Consolidation des Missions 2026")
 
-# 1. BARRE LATÉRALE - CHARGEMENT MULTIPLE
+# 1. BARRE LATÉRALE
 with st.sidebar:
     st.header("📥 Importation Terrain")
     uploaded_files = st.file_uploader(
@@ -109,7 +130,7 @@ df_mis = data["MISSIONS"]
 df_pts = data["POINTS"]
 df_anom = data["ANOMALIES"]
 
-# --- EXTRACTION SÉCURISÉE DES COLONNES (STRATÉGIE PHRASE/MOT-CLÉ) ---
+# --- EXTRACTION SECURISEE DES COLONNES ---
 col_impact = next((c for c in df_anom.columns if 'Impact' in c), None)
 col_crit = next((c for c in df_anom.columns if 'critic' in c or 'Critic' in c), None)
 col_domaine = next((c for c in df_anom.columns if 'Domaine' in c or 'Type' in c), None)
@@ -137,30 +158,27 @@ with k3:
     if col_tx_conf and not df_mis.empty:
         raw_mean = pd.to_numeric(df_mis[col_tx_conf], errors='coerce').mean()
         conformite_moyenne = raw_mean * 100 if raw_mean <= 1.0 else raw_mean
-    st.metric("Taux de Conformité Moyen", f"{conformite_moyenne:.1f}%")
+    st.metric("Taux de Conformité Moyen", f"{conformite_moyenne:.1f}%" if conformite_moyenne > 0 else "N/A")
 
 with k4:
     st.metric("Classeurs à Fusionner", len(uploaded_files))
 
 st.divider()
 
-# 4. ANALYSES ET GRAPHES INTERACTIFS (CORRIGÉS)
+# 4. ANALYSES ET GRAPHES INTERACTIFS
 g1, g2 = st.columns(2)
 
 with g1:
     st.markdown("**🔍 Volume d'Anomalies par Domaine**")
     if not df_anom.empty and col_domaine:
-        # On s'assure qu'il n'y a pas de lignes totalement vides sur l'axe X
         df_graph1 = df_anom.dropna(subset=[col_domaine])
         
-        # Mapping de couleurs souple (gère avec ou sans émojis)
         color_opt = {
             '🔴 Critique': '#FF4B4B', 'Critique': '#FF4B4B',
             '🟠 Majeur': '#FFA500', 'Majeur': '#FFA500',
             '🟡 Mineur': '#FFD700', 'Mineur': '#FFD700',
             '🟢 Faible': '#2ECC71', 'Faible': '#2ECC71'
         }
-        
         color_col = col_crit if col_crit else None
         
         fig = px.bar(
@@ -170,10 +188,10 @@ with g1:
             barmode='group',
             color_discrete_map=color_opt
         )
-        fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), xaxis_title="Domaines inspectés", yaxis_title="Nombre d'écarts")
+        fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), xaxis_title=None, yaxis_title="Nombre d'écarts")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Pas de données graphiques disponibles pour l'onglet ANOMALIES.")
+        st.info("Aucune anomalie détectée dans les fichiers importés pour le graphique.")
 
 with g2:
     st.markdown("**🌍 Cartographie des Alertes par Pays / Entité**")
@@ -183,7 +201,7 @@ with g2:
         fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Aucun découpage géographique disponible.")
+        st.info("Aucune donnée géographique à cartographier.")
 
 # 5. CONTRÔLE QUALITÉ (SAS DE VALIDATION)
 st.divider()
@@ -200,36 +218,38 @@ with q1:
             (pd.to_numeric(df_anom[col_impact], errors='coerce').fillna(0) == 0)
         ]
         for _, row in lignes_anormales.iterrows():
-            alertes_qualite.append(f"⚠️ **{row['Fichier Source']}** : L'anomalie **{row.get('ID Anomalie', '')}** qualifiée de [{row[col_crit]}] a un impact financier nul ou non chiffré.")
+            id_anom_val = row.get('ID Anomalie', 'N/A')
+            alertes_qualite.append(f"⚠️ **{row['Fichier Source']}** : L'anomalie **{id_anom_val}** qualifiée de [{row[col_crit]}] a un impact financier nul.")
 
     col_num_mis_m = next((c for c in df_mis.columns if 'Mission' in c or 'N°' in c), None)
     col_num_mis_p = next((c for c in df_pts.columns if 'Mission' in c or 'N°' in c), None)
     
     if col_num_mis_m and not df_mis.empty:
         for m_id in df_mis[col_num_mis_m].dropna().unique():
+            if "Une mission" in str(m_id) or str(m_id).startswith("N°"):
+                continue
             if df_pts.empty or col_num_mis_p not in df_pts.columns or m_id not in df_pts[col_num_mis_p].values:
-                alertes_qualite.append(f"❌ La mission **{m_id}** est présente dans le Journal mais n'a aucun point de contrôle saisi.")
+                alertes_qualite.append(f"❌ La mission **{m_id}** est présente dans le Journal mais n'a aucun point de contrôle rattaché.")
 
     if alertes_qualite:
         for alerte in alertes_qualite:
             st.warning(alerte)
     else:
-        st.success("✅ Diagnostic validé : Les liaisons et chiffrages des fichiers importés sont structurellement sains.")
+        st.success("✅ Diagnostic validé : Structure et intégrité des lignes OK.")
 
 with q2:
-    st.markdown("**📌 Synthèse des Anomalies Terrains détectées**")
+    st.markdown("**📌 Registre Exhaustif des Anomalies Importées**")
     if not df_anom.empty:
-        cols_to_show = [c for c in [col_crit, col_pays, 'Description', col_impact] if c is not None]
-        sort_col = col_impact if col_impact else df_anom.columns[0]
+        cols_to_show = [c for c in ['ID Anomalie', col_crit, col_pays, 'Site / Entité', 'Description', col_impact] if c is not None and c in df_anom.columns]
+        sort_col = col_impact if col_impact and col_impact in df_anom.columns else df_anom.columns[0]
         df_top = df_anom.sort_values(by=sort_col, ascending=False)
         st.dataframe(df_top[cols_to_show], hide_index=True, use_container_width=True)
     else:
-        st.info("Aucune ligne d'anomalie trouvée.")
+        st.info("Aucune anomalie à lister pour le moment.")
 
-# 6. ACTION DE SCELLÉ ET COMPILATION DU FICHIER MAÎTRE
+# 6. EXPORTATION DES DONNÉES
 st.divider()
 st.header("📤 Clôture de Session & Génération")
-st.write("Après vérification visuelle des indicateurs, cliquez ci-dessous pour matérialiser le Fichier Maître.")
 
 if st.button("🏗️ Compiler et figer le Fichier Maître Consolidé", type="primary", use_container_width=True):
     output_buffer = io.BytesIO()
