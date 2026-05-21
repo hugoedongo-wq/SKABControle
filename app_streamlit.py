@@ -4,7 +4,7 @@ import plotly.express as px
 from io import BytesIO
 import openpyxl
 
-# Configuration globale de la page
+# Configuration globale de la page Streamlit
 st.set_page_config(
     page_title="SKAB Nutrition — Consolidation CI",
     page_icon="📊",
@@ -12,10 +12,10 @@ st.set_page_config(
 )
 
 st.title("📊 SKAB Nutrition — Plateforme de Consolidation du Contrôle Interne")
-st.markdown("### 🚀 Remplacement de Power Query en environnement Cloud")
-st.markdown("Déposez simultanément les fichiers Excel de vos contrôleurs pour fusionner instantanément les données et mettre à jour les indicateurs du Groupe.")
+st.markdown("### 🚀 Système de Consolidation Cloud (Remplacement Power Query)")
+st.markdown("Déposez simultanément les fichiers Excel de vos contrôleurs pour fusionner instantanément les données et mettre à jour le Tableau de Bord Groupe.")
 
-# --- MOTEUR DE TRAITEMENT PANDAS (OPTIMISÉ CLOUD) ---
+# --- MOTEUR DE TRAITEMENT PANDAS SECURISE ---
 def extraire_donnees_controleurs(fichiers_charges):
     all_missions = []
     all_points = []
@@ -28,11 +28,13 @@ def extraire_donnees_controleurs(fichiers_charges):
         try:
             # 1. Lecture sécurisée de l'identité du contrôleur (Feuille PARAMETRES)
             df_param = pd.read_excel(fichier, sheet_name="PARAMETRES", header=None)
+            
+            # Récupération selon l'index exact du template SKAB (Ligne 5 = index 4, Ligne 6 = index 5, etc.)
             nom_ctrl = df_param.iloc[4, 1] if len(df_param) > 4 else "Inconnu"
             code_ctrl = df_param.iloc[5, 1] if len(df_param) > 5 else "INCONNU"
             pays_ctrl = df_param.iloc[6, 1] if len(df_param) > 6 else "Inconnu"
 
-            # 2. Consolidation de l'onglet MES_MISSIONS (En-tête ligne 5 -> skiprows=4)
+            # 2. Consolidation de l'onglet MES_MISSIONS (En-tête à la ligne 5 -> skiprows=4)
             df_mis = pd.read_excel(fichier, sheet_name="MES_MISSIONS", skiprows=4)
             df_mis = df_mis.dropna(subset=["N° Mission"])
             df_mis["Contrôleur"] = nom_ctrl
@@ -72,7 +74,7 @@ def extraire_donnees_controleurs(fichiers_charges):
                 "Fichier": nom_fichier, "Contrôleur": "Erreur", "Code": "-", "Pays": "-", "Statut": f"❌ Échec de lecture : {str(e)}"
             })
 
-    # Regroupement final
+    # Regroupement final global
     conso_mis = pd.concat(all_missions, ignore_index=True) if all_missions else pd.DataFrame()
     conso_pts = pd.concat(all_points, ignore_index=True) if all_points else pd.DataFrame()
     conso_anom = pd.concat(all_anomalies, ignore_index=True) if all_anomalies else pd.DataFrame()
@@ -81,7 +83,7 @@ def extraire_donnees_controleurs(fichiers_charges):
 
     return conso_mis, conso_pts, conso_anom, conso_pln, df_journal
 
-# --- INTERFACE UTISATEUR (UI) ---
+# --- INTERFACE UTILISATEUR (UI) ---
 fichiers_transmis = st.file_uploader(
     "Téléversez les fichiers Excel des contrôleurs (.xlsx)",
     type=["xlsx"],
@@ -105,11 +107,15 @@ if fichiers_transmis:
     nb_missions = len(conso_mis) if not conso_mis.empty else 0
     nb_anomalies = len(conso_anom) if not conso_anom.empty else 0
     
+    # CALCUL SÉCURISÉ DES ANOMALIES CRITIQUES (Résolution du bug AttributeError)
     nb_critiques_actives = 0
     if not conso_anom.empty and "Niveau criticité" in conso_anom.columns and "Statut" in conso_anom.columns:
+        criticite_texte = conso_anom["Niveau criticité"].astype(str)
+        statut_texte = conso_anom["Statut"].astype(str)
+        
         nb_critiques_actives = len(conso_anom[
-            (conso_anom["Niveau criticité"].str.contains("Critique", na=False)) & 
-            (conso_anom["Statut"].str.contains("Ouvert|En cours", na=False, case=False))
+            (criticite_texte.str.contains("Critique", na=False)) & 
+            (statut_texte.str.contains("Ouvert|En cours", na=False, case=False))
         ])
         
     perte_financiere = 0
@@ -121,34 +127,43 @@ if fichiers_transmis:
     c3.metric("Urgences Critiques", nb_critiques_actives)
     c4.metric("Impact Financier Global", f"{perte_financiere:,.0f} FCFA")
 
-    # --- GRAPHIQUES EXÉCUTIFS ---
+    # --- GRAPHIQUES EXÉCUTIFS SÉCURISÉS ---
+    st.write("")
     g1, g2 = st.columns(2)
+    
     with g1:
         if not conso_anom.empty and "Niveau criticité" in conso_anom.columns:
-            st.markdown("**Gravité des risques identifiés**")
-            df_g1 = conso_anom["Niveau criticité"].value_counts().reset_index()
+            st.markdown("**🎯 Gravité des risques identifiés**")
+            # astype(str) ajouté ici pour parer à tout défaut d'alignement de type dans le graphique
+            df_g1 = conso_anom["Niveau criticité"].astype(str).value_counts().reset_index()
             df_g1.columns = ["Criticité", "Volume"]
+            
             fig1 = px.pie(df_g1, values="Volume", names="Criticité", hole=0.4,
                           color_discrete_map={"🔴 Critique":"#D32F2F", "🟠 Majeur":"#F57C00", "🟡 Mineur":"#FBC02D", "🟢 Faible":"#388E3C"})
             st.plotly_chart(fig1, use_container_width=True)
+        else:
+            st.info("Aucune donnée disponible pour le graphique de criticité.")
             
     with g2:
         if not conso_anom.empty and "Pays" in conso_anom.columns:
-            st.markdown("**Répartition géographique des anomalies**")
-            df_g2 = conso_anom["Pays"].value_counts().reset_index()
+            st.markdown("**🏢 Répartition géographique des anomalies**")
+            df_g2 = conso_anom["Pays"].astype(str).value_counts().reset_index()
             df_g2.columns = ["Pays", "Anomalies"]
+            
             fig2 = px.bar(df_g2, x="Pays", y="Anomalies", text_auto=True, color="Anomalies", color_continuous_scale="Oranges")
             st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("Aucune donnée géographique disponible pour les anomalies.")
 
     # --- COMPILATION ET EXPORT DE DONNÉES STRUCTURÉES ---
     st.divider()
-    st.subheader("📥 Génération des Données Consolidées")
-    st.info("Le système génère un classeur structuré prêt à être injecté ou lu par votre Tableau de bord Excel Principal.")
+    st.subheader("📥 Génération des Données Consolidées Groupe")
+    st.info("Le système génère un classeur structuré prêt à être copié ou lu par votre Tableau de bord Excel Principal (Fichier Maître).")
     
     if st.button("⚙️ Lancer la compilation finale des données"):
         buffer_excel = BytesIO()
         with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-            # Structuration automatique conforme aux onglets attendus
+            # Injection propre respectant les structures des onglets cibles (skiprows initiaux)
             if not conso_mis.empty:
                 conso_mis.to_excel(writer, sheet_name="CONSO_MISSIONS", index=False, startrow=4)
             if not conso_pts.empty:
@@ -163,7 +178,7 @@ if fichiers_transmis:
         donnees_finales = buffer_excel.getvalue()
         
         st.download_button(
-            label="💾 Télécharger les Données Consolidées Groupe (.xlsx)",
+            label="💾 Télécharger les Données Consolidées (.xlsx)",
             data=donnees_finales,
             file_name="SKAB_DATA_CONSOLIDATION_GROUPE.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
